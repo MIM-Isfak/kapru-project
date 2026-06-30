@@ -1,8 +1,15 @@
 import { NextResponse } from 'next/server';
 import { ai, GEMINI_MODEL, SYSTEM_PROMPT } from '@/lib/gemini';
 import { getMcpClient, getMcpToolsAsGeminiDeclarations } from '@/lib/mcp-client';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import type { ChatMessage, Product } from '@/lib/types';
 import type { Content, Part, FunctionResponse } from '@google/genai';
+
+// Type for raw MCP callTool result
+type McpToolResult = {
+  content?: { type: string; text?: string }[];
+  isError?: boolean;
+};
 
 async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
   const delays = [1000, 2000, 4000];
@@ -10,9 +17,9 @@ async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
   while (true) {
     try {
       return await fn();
-    } catch (error: any) {
+    } catch (error: unknown) {
       if (attempt >= 3) throw error;
-      const msg = error?.message?.toLowerCase() || String(error).toLowerCase();
+      const msg = (error instanceof Error ? error.message : String(error)).toLowerCase();
       if (msg.includes('rate limit') || msg.includes('429') || msg.includes('resource_exhausted')) {
         await new Promise(resolve => setTimeout(resolve, delays[attempt]));
         attempt++;
@@ -25,7 +32,22 @@ async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
 
 // ─── Product shape helpers ────────────────────────────────────────────────────
 
-function mapKaprukaItemToProduct(item: any, isSingleProduct: boolean): Product {
+type KaprukaItem = {
+  id?: unknown;
+  name?: unknown;
+  price?: { amount?: number };
+  compare_at_price?: { amount?: number };
+  images?: string[];
+  image_url?: string;
+  rating?: unknown;
+  category?: { name?: string };
+  in_stock?: boolean;
+  summary?: string;
+  description?: string;
+  url?: string;
+};
+
+function mapKaprukaItemToProduct(item: KaprukaItem, isSingleProduct: boolean): Product {
   return {
     id: String(item.id ?? Math.random().toString(36).substring(2, 9)),
     name: String(item.name ?? ''),
@@ -42,7 +64,7 @@ function mapKaprukaItemToProduct(item: any, isSingleProduct: boolean): Product {
   };
 }
 
-function extractProductsFromToolResult(toolName: string, rawResult: any): Product[] {
+function extractProductsFromToolResult(toolName: string, rawResult: McpToolResult): Product[] {
   const products: Product[] = [];
   try {
     // MCP wraps the response as: { content: [{ type: 'text', text: '<json string>' }] }
@@ -71,7 +93,7 @@ function extractProductsFromToolResult(toolName: string, rawResult: any): Produc
 // ─── Route handler ────────────────────────────────────────────────────────────
 
 export async function POST(req: Request) {
-  let mcpClient: any = null;
+  let mcpClient: Client | null = null;
   try {
     const { messages } = await req.json() as { messages: ChatMessage[] };
 
@@ -90,7 +112,7 @@ export async function POST(req: Request) {
     while (iterations < 5) {
       iterations++;
 
-      const config: any = {
+      const config: Record<string, unknown> = {
         systemInstruction: SYSTEM_PROMPT,
       };
 
@@ -121,6 +143,7 @@ export async function POST(req: Request) {
 
       for (const call of functionCalls) {
         if (!call.name) continue;
+        const toolName = call.name; // narrowed to string
 
         // TASK 1: Force response_format: 'json' inside params if params is an object
         const rawArgs = (call.args ?? {}) as Record<string, unknown>;
@@ -135,23 +158,23 @@ export async function POST(req: Request) {
               }
             : rawArgs;
 
-        let toolResult;
+        let toolResult: McpToolResult | { error: string };
         try {
-          const result = await withRetry(() => mcpClient.callTool({
-            name: call.name,
+          const result = await withRetry(() => mcpClient!.callTool({
+            name: toolName,
             arguments: callArgs,
-          }));
+          })) as McpToolResult;
           toolResult = result;
 
           // Extract products from search and get_product tool results
-          const extracted = extractProductsFromToolResult(call.name, result);
+          const extracted = extractProductsFromToolResult(toolName, result);
           products.push(...extracted);
-        } catch (e: any) {
-          toolResult = { error: e?.message || String(e) };
+        } catch (e: unknown) {
+          toolResult = { error: e instanceof Error ? e.message : String(e) };
         }
 
         const functionResponse: FunctionResponse = {
-          name: call.name,
+          name: toolName,
           response: { result: toolResult } as Record<string, unknown>,
         };
 
@@ -171,7 +194,7 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ reply: finalResponseText, products });
 
-  } catch (error) {
+  } catch (error: unknown) {
     console.error('Chat API error:', error);
     return NextResponse.json(
       { error: 'Something went wrong, please try again.' },
@@ -180,8 +203,9 @@ export async function POST(req: Request) {
   } finally {
     if (mcpClient) {
       try {
-        await mcpClient.close();
-      } catch (e) {
+        const closeable = mcpClient as { close?: () => Promise<void> };
+        await closeable.close?.();
+      } catch (e: unknown) {
         console.error('Failed to close MCP client', e);
       }
     }

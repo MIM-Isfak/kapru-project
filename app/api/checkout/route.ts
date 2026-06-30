@@ -1,5 +1,12 @@
 import { NextResponse } from 'next/server';
 import { getMcpClient } from '@/lib/mcp-client';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+
+// Type for the raw MCP callTool result
+type McpToolResult = {
+  content?: { type: string; text?: string }[];
+  isError?: boolean;
+};
 
 async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
   const delays = [1000, 2000, 4000];
@@ -7,9 +14,9 @@ async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
   while (true) {
     try {
       return await fn();
-    } catch (error: any) {
+    } catch (error: unknown) {
       if (attempt >= 3) throw error;
-      const msg = error?.message?.toLowerCase() || String(error).toLowerCase();
+      const msg = (error instanceof Error ? error.message : String(error)).toLowerCase();
       if (msg.includes('rate limit') || msg.includes('429') || msg.includes('resource_exhausted')) {
         await new Promise(resolve => setTimeout(resolve, delays[attempt]));
         attempt++;
@@ -21,14 +28,17 @@ async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 export async function POST(req: Request) {
-  let mcpClient: any = null;
+  let mcpClient: Client | null = null;
   try {
-    const body = await req.json();
+    const body = await req.json() as {
+      recipient: unknown; delivery: unknown; sender: unknown;
+      gift_message?: unknown; cart: unknown;
+    };
     const { recipient, delivery, sender, gift_message, cart } = body;
 
     mcpClient = await getMcpClient();
 
-    const result = await withRetry(() => mcpClient.callTool({
+    const result = await withRetry(() => mcpClient!.callTool({
       name: 'kapruka_create_order',
       arguments: {
         params: {
@@ -40,7 +50,7 @@ export async function POST(req: Request) {
           response_format: 'json',
         },
       },
-    }));
+    })) as McpToolResult;
 
     // MCP wraps response as { content: [{ type: 'text', text: '...' }] }
     const textContent: string | undefined = result?.content?.[0]?.text;
@@ -53,14 +63,14 @@ export async function POST(req: Request) {
     }
 
     // If the tool returned an error flag
-    if (result?.isError) {
+    if (result.isError) {
       return NextResponse.json(
         { success: false, error: textContent },
         { status: 400 }
       );
     }
 
-    let parsed: any;
+    let parsed: Record<string, unknown>;
     try {
       parsed = JSON.parse(textContent);
     } catch {
@@ -89,7 +99,7 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ success: false, error: errorMsg }, { status: 400 });
 
-  } catch (error) {
+  } catch (error: unknown) {
     console.error('Checkout API error:', error);
     return NextResponse.json(
       { success: false, error: 'Something went wrong, please try again.' },
@@ -99,7 +109,7 @@ export async function POST(req: Request) {
     if (mcpClient) {
       try {
         await mcpClient.close();
-      } catch (e) {
+      } catch (e: unknown) {
         console.error('Failed to close MCP client (checkout):', e);
       }
     }

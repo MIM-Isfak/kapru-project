@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useRef } from "react";
 import Link from "next/link";
 import { ArrowLeft, Loader2, CheckCircle2 } from "lucide-react";
 import { Input } from "@/components/ui/input";
@@ -70,8 +70,8 @@ export default function CheckoutPage() {
       cityDebounceRef.current = setTimeout(async () => {
         try {
           const res = await fetch(`/api/cities?q=${encodeURIComponent(val.trim())}`);
-          const data = await res.json();
-          setCitySuggestions(data.cities.map((c: any) => c.name));
+          const data = await res.json() as { cities: { name: string }[] };
+          setCitySuggestions(data.cities.map((c) => c.name));
         } catch {
           setCitySuggestions([]);
         }
