@@ -13,16 +13,16 @@ type McpToolResult = {
 };
 
 async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
-  const delays = [1000, 2000, 4000];
   let attempt = 0;
   while (true) {
     try {
       return await fn();
     } catch (error: unknown) {
-      if (attempt >= 3) throw error;
+      if (attempt >= 1) throw error;
       const msg = (error instanceof Error ? error.message : String(error)).toLowerCase();
-      if (msg.includes('rate limit') || msg.includes('429') || msg.includes('resource_exhausted')) {
-        await new Promise(resolve => setTimeout(resolve, delays[attempt]));
+      const status = (error as any)?.status;
+      if (msg.includes('rate limit') || msg.includes('429') || msg.includes('resource_exhausted') || msg.includes('quota') || status === 429) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
         attempt++;
       } else {
         throw error;
@@ -164,6 +164,7 @@ export async function POST(req: Request) {
 
         let toolResult: McpToolResult | { error: string };
         try {
+          console.log(`[Chat API] Invoking tool: ${toolName}`, JSON.stringify(callArgs));
           const result = await withRetry(() => mcpClient!.callTool({
             name: toolName,
             arguments: callArgs,
@@ -200,7 +201,33 @@ export async function POST(req: Request) {
     return NextResponse.json({ reply: finalResponseText, products, stage });
 
   } catch (error: unknown) {
-    console.error('Chat API error:', error);
+    console.error('Chat API FULL error:', error);
+    if (error instanceof Error) {
+      console.error('Error message:', error.message);
+      console.error('Error stack:', error.stack);
+    }
+    
+    const errObj = error as any;
+    console.error('Error status:', errObj?.status || errObj?.response?.status);
+
+    const msg = (error instanceof Error ? error.message : String(error)).toLowerCase();
+    const status = errObj?.status || errObj?.response?.status;
+
+    if (msg.includes('429') || msg.includes('quota') || msg.includes('rate limit') || msg.includes('resource_exhausted') || status === 429) {
+      return NextResponse.json(
+        { error: "I'm getting a lot of requests right now — please wait a few seconds and try again." },
+        { status: 429 }
+      );
+    }
+
+    if (msg.includes('401') || msg.includes('403') || msg.includes('key') || msg.includes('auth') || status === 401 || status === 403) {
+      console.error('API KEY INVALID OR MISSING');
+      return NextResponse.json(
+        { error: "There's a configuration issue on our end — please contact support." },
+        { status: 500 }
+      );
+    }
+
     return NextResponse.json(
       { error: 'Something went wrong, please try again.' },
       { status: 500 }
