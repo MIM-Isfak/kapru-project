@@ -61,6 +61,7 @@ export function ChatWindow() {
         role: "assistant",
         content: data.reply || "",
         timestamp: Date.now(),
+        stage: data.stage,
       };
 
       setMessages((prev) => [...prev, newAssistantMessage]);

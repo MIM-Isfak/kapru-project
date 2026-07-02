@@ -3,7 +3,8 @@ import { ai, GEMINI_MODEL, SYSTEM_PROMPT } from '@/lib/gemini';
 import { getMcpClient, getMcpToolsAsGeminiDeclarations } from '@/lib/mcp-client';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import type { ChatMessage, Product } from '@/lib/types';
-import type { Content, Part, FunctionResponse } from '@google/genai';
+import type { Content, Part, FunctionResponse, FunctionCall } from '@google/genai';
+import { determineStage } from '@/lib/agent-stages';
 
 // Type for raw MCP callTool result
 type McpToolResult = {
@@ -107,6 +108,7 @@ export async function POST(req: Request) {
 
     let finalResponseText = '';
     const products: Product[] = [];
+    const allFunctionCalls: FunctionCall[] = [];
 
     let iterations = 0;
     while (iterations < 5) {
@@ -132,6 +134,8 @@ export async function POST(req: Request) {
         finalResponseText = response.text || '';
         break;
       }
+
+      allFunctionCalls.push(...functionCalls);
 
       // Add the model's function-call turn
       contents.push({
@@ -192,7 +196,8 @@ export async function POST(req: Request) {
       });
     }
 
-    return NextResponse.json({ reply: finalResponseText, products });
+    const stage = determineStage(allFunctionCalls, finalResponseText, messages);
+    return NextResponse.json({ reply: finalResponseText, products, stage });
 
   } catch (error: unknown) {
     console.error('Chat API error:', error);

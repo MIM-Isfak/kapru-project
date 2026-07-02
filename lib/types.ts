@@ -21,4 +21,5 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   timestamp: number;
+  stage?: 'discovery' | 'checkout';
 }

@@ -1,4 +1,4 @@
-import { Sparkles } from "lucide-react";
+import { Sparkles, Search, ShoppingCart } from "lucide-react";
 import { ChatMessage } from "@/lib/types";
 
 interface MessageBubbleProps {
@@ -10,19 +10,30 @@ export function MessageBubble({ message }: MessageBubbleProps) {
 
   if (isUser) {
     return (
-      <div className="ml-auto bg-[var(--kapru-teal)] text-white rounded-2xl p-4 max-w-[75%]">
+      <div className="ml-auto bg-[var(--kapru-teal)] text-white rounded-2xl p-4 max-w-[75%] mt-2 mb-2">
         {message.content}
       </div>
     );
   }
 
   return (
-    <div className="flex gap-2 w-full max-w-[75%]">
-      <div className="flex-shrink-0 size-8 rounded-full bg-[var(--kapru-gold)] text-white flex items-center justify-center">
+    <div className="flex gap-2 w-full max-w-[75%] mt-2 mb-2">
+      <div className="flex-shrink-0 size-8 rounded-full bg-[var(--kapru-gold)] text-white flex items-center justify-center mt-1">
         <Sparkles size={16} />
       </div>
-      <div className="bg-white border border-[var(--kapru-teal-light)] text-[var(--kapru-ink)] rounded-2xl p-4">
-        {message.content}
+      <div className="flex flex-col gap-1 w-full">
+        {message.stage && (
+          <div className="flex items-center gap-1.5 text-[10px] font-bold tracking-wider text-[var(--kapru-teal)] uppercase ml-2">
+            {message.stage === 'discovery' ? (
+              <><Search size={10} /> Discovery Agent</>
+            ) : (
+              <><ShoppingCart size={10} /> Checkout Agent</>
+            )}
+          </div>
+        )}
+        <div className="bg-white border border-[var(--kapru-teal-light)] text-[var(--kapru-ink)] rounded-2xl p-4">
+          {message.content}
+        </div>
       </div>
     </div>
   );
