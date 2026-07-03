@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server';
 import { geminiRotator, GEMINI_MODEL, SYSTEM_PROMPT } from '@/lib/gemini';
-import { getMcpClient, getMcpToolsAsGeminiDeclarations } from '@/lib/mcp-client';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { getMcpClient, getMcpToolsAsGeminiDeclarations, invalidateMcpClient, callMcpTool } from '@/lib/mcp-client';
 import type { ChatMessage, Product } from '@/lib/types';
 import type { Content, Part, FunctionResponse, FunctionCall } from '@google/genai';
 import { determineStage } from '@/lib/agent-stages';
@@ -56,7 +55,7 @@ type KaprukaItem = {
   id?: unknown;
   name?: unknown;
   price?: { amount?: number };
-  compare_at_price?: { amount?: number };
+  compare_at_price?: { amount?: number } | null;
   images?: string[];
   image_url?: string;
   rating?: unknown;
@@ -110,20 +109,80 @@ function extractProductsFromToolResult(toolName: string, rawResult: McpToolResul
   return products;
 }
 
+/**
+ * Build the callTool arguments, ensuring response_format: 'json' is always
+ * set inside the `params` object — regardless of whether Gemini sent the args
+ * with a params wrapper (Shape A) or flattened (Shape B).
+ *
+ *   Shape A: { params: { q: '...', ... } }   ← MCP inputSchema has params wrapper
+ *   Shape B: { q: '...', ... }               ← Gemini flattened the schema
+ */
+function buildCallArgs(rawArgs: Record<string, unknown>, toolName: string): Record<string, unknown> {
+  // Only kapruka search tools need response_format
+  if (!toolName.startsWith('kapruka_')) return rawArgs;
+
+  if (rawArgs.params && typeof rawArgs.params === 'object' && !Array.isArray(rawArgs.params)) {
+    // Shape A — inject inside existing params
+    return {
+      ...rawArgs,
+      params: {
+        ...(rawArgs.params as Record<string, unknown>),
+        response_format: 'json',
+      },
+    };
+  }
+
+  // Shape B — Gemini flattened the args; wrap them in params
+  return {
+    params: {
+      ...rawArgs,
+      response_format: 'json',
+    },
+  };
+}
+
 // ─── Route handler ────────────────────────────────────────────────────────────
 
 export async function POST(req: Request) {
-  let mcpClient: Client | null = null;
   try {
     const { messages } = await req.json() as { messages: ChatMessage[] };
 
-    mcpClient = await getMcpClient();
-    const toolDeclarations = await getMcpToolsAsGeminiDeclarations(mcpClient);
+    // MCP connection is best-effort — if the Kapruka server is unreachable we
+    // degrade gracefully to a text-only assistant rather than throwing a 500.
+    let mcpClient = null;
+    let toolDeclarations: Awaited<ReturnType<typeof getMcpToolsAsGeminiDeclarations>> = [];
+    try {
+      mcpClient = await getMcpClient();
+      toolDeclarations = await getMcpToolsAsGeminiDeclarations(mcpClient);
+    } catch (mcpErr: unknown) {
+      console.warn('[Chat API] MCP connection failed — running without tools:', mcpErr instanceof Error ? mcpErr.message : String(mcpErr));
+      invalidateMcpClient();
+    }
 
-    const contents: Content[] = messages.map(msg => ({
+    let contents: Content[] = messages.map(msg => ({
       role: msg.role === 'assistant' ? 'model' : 'user',
       parts: [{ text: msg.content }]
     }));
+
+    // Gemini requires the history to start with a 'user' message and strictly alternate.
+    // 1. Remove leading 'model' messages
+    while (contents.length > 0 && contents[0].role === 'model') {
+      contents.shift();
+    }
+    
+    // 2. Collapse consecutive messages of the same role
+    const collapsedContents: Content[] = [];
+    for (const msg of contents) {
+      if (collapsedContents.length > 0 && collapsedContents[collapsedContents.length - 1].role === msg.role) {
+        const lastMsg = collapsedContents[collapsedContents.length - 1];
+        if (lastMsg.parts && lastMsg.parts.length > 0) {
+          lastMsg.parts[0].text = (lastMsg.parts[0].text ?? '') + '\n\n' + (msg.parts?.[0]?.text ?? '');
+        }
+      } else {
+        collapsedContents.push(msg);
+      }
+    }
+    contents = collapsedContents;
 
     let finalResponseText = '';
     const products: Product[] = [];
@@ -147,6 +206,22 @@ export async function POST(req: Request) {
         config
       }));
 
+      // ── Diagnostic logging ──────────────────────────────────────────────────
+      const _candidate = response.candidates?.[0];
+      const _parts = _candidate?.content?.parts;
+      console.log('[Chat API] GEMINI RESPONSE DIAGNOSTICS', {
+        activeKeyIndex: geminiRotator.keyCount > 0 ? '(see rotator)' : 'unknown',
+        finishReason: _candidate?.finishReason ?? 'NO_CANDIDATE',
+        contentRole: _candidate?.content?.role ?? 'none',
+        partsExists: Array.isArray(_parts),
+        partsLength: Array.isArray(_parts) ? _parts.length : 'N/A',
+        partTypes: Array.isArray(_parts) ? _parts.map(p => Object.keys(p).join('|')) : [],
+        safetyRatings: _candidate?.safetyRatings?.map(r => `${r.category}:${r.probability}`) ?? [],
+        hasFunctionCalls: Array.isArray(response.functionCalls) && response.functionCalls.length > 0,
+        textLength: typeof response.text === 'string' ? response.text.length : 'N/A',
+      });
+      // ────────────────────────────────────────────────────────────────────────
+
       const functionCalls = response.functionCalls;
 
       if (!functionCalls || functionCalls.length === 0) {
@@ -168,38 +243,54 @@ export async function POST(req: Request) {
         if (!call.name) continue;
         const toolName = call.name; // narrowed to string
 
-        // Force response_format: 'json' inside params if params is an object
         const rawArgs = (call.args ?? {}) as Record<string, unknown>;
-        const callArgs: Record<string, unknown> =
-          rawArgs.params && typeof rawArgs.params === 'object' && !Array.isArray(rawArgs.params)
-            ? {
-                ...rawArgs,
-                params: {
-                  ...(rawArgs.params as Record<string, unknown>),
-                  response_format: 'json',
-                },
-              }
-            : rawArgs;
+        const callArgs = buildCallArgs(rawArgs, toolName);
 
         let toolResult: McpToolResult | { error: string };
+        let extractedCount = 0;
         try {
           console.log(`[Chat API] Invoking tool: ${toolName}`, JSON.stringify(callArgs));
-          const result = await withRetry(() => mcpClient!.callTool({
-            name: toolName,
-            arguments: callArgs,
-          })) as McpToolResult;
+          const result = await callMcpTool(toolName, callArgs) as McpToolResult;
           toolResult = result;
 
           // Extract products from search and get_product tool results
           const extracted = extractProductsFromToolResult(toolName, result);
+          extractedCount = extracted.length;
           products.push(...extracted);
+
+          // Log the real result count so we can diagnose empty-result bugs
+          if (toolName === 'kapruka_search_products' || toolName === 'kapruka_get_product') {
+            console.log(`[Chat API] ${toolName} → ${extractedCount} product(s) extracted. args:`, JSON.stringify(callArgs));
+          }
         } catch (e: unknown) {
-          toolResult = { error: e instanceof Error ? e.message : String(e) };
+          const errMsg = e instanceof Error ? e.message : String(e);
+          console.error(`[Chat API] Tool ${toolName} failed:`, errMsg);
+          // Invalidate so next request gets a fresh MCP connection
+          if (errMsg.includes('ECONNRESET') || errMsg.includes('fetch failed') || errMsg.includes('unavailable')) {
+            invalidateMcpClient();
+            mcpClient = null;
+          }
+          toolResult = { error: errMsg };
         }
+
+        // Inject _product_count into the function response so the model knows
+        // how many results were actually returned — this prevents it from
+        // claiming "I found results" when the search returned zero items.
+        const enrichedResult: Record<string, unknown> =
+          'error' in (toolResult as object)
+            ? { ...(toolResult as Record<string, unknown>) }
+            : {
+                ...(toolResult as Record<string, unknown>),
+                _product_count: extractedCount,
+                _note:
+                  extractedCount === 0
+                    ? 'Search returned ZERO products. Do NOT tell the user you found results.'
+                    : `Search returned ${extractedCount} product(s). You may present them to the user.`,
+              };
 
         const functionResponse: FunctionResponse = {
           name: toolName,
-          response: { result: toolResult } as Record<string, unknown>,
+          response: enrichedResult,
         };
 
         if (call.id) {
@@ -228,9 +319,40 @@ export async function POST(req: Request) {
       finalResponseText = summaryResponse.text || '';
     }
 
-    // Absolute last resort: never return an empty string to the client
+    // Absolute last resort: never return an empty string to the client.
     if (!finalResponseText) {
-      finalResponseText = "I found some results for you! Take a look at the products above.";
+      finalResponseText = products.length > 0
+        ? "Here are some options that might interest you!"
+        : "I couldn't find exact matches — want me to try a different search?";
+    }
+
+    // Log final state before responding
+    console.log(`[Chat API] Final: products=${products.length}, textLength=${finalResponseText.length}`);
+
+    // ── Honesty guard: if no products were found, ensure the reply doesn't
+    //    falsely claim success.
+    if (products.length === 0 && finalResponseText) {
+      const lower = finalResponseText.toLowerCase();
+      const falseSuccessPhrases = [
+        'i found',
+        'here are',
+        'take a look',
+        "i've found",
+        'found some',
+        'found a few',
+        'found the following',
+        'results for you',
+        "here's what i found",
+        'check out these',
+        'i searched and found',
+      ];
+      const isFalseSuccess = falseSuccessPhrases.some(p => lower.includes(p));
+      if (isFalseSuccess) {
+        console.warn('[Chat API] Honesty guard triggered — overriding false success reply.');
+        finalResponseText =
+          "I couldn't find exact matches for that on Kapruka right now. " +
+          "Want me to try a different search term or category?";
+      }
     }
 
     const stage = determineStage(allFunctionCalls, finalResponseText, messages);
@@ -242,10 +364,8 @@ export async function POST(req: Request) {
       console.error('Error message:', error.message);
       console.error('Error stack:', error.stack);
     }
-    
-    const errObj = error as { status?: number; response?: { status?: number } };
-    console.error('Error status:', errObj?.status || errObj?.response?.status);
 
+    const errObj = error as { status?: number; response?: { status?: number } };
     const msg = (error instanceof Error ? error.message : String(error)).toLowerCase();
     const status = errObj?.status || errObj?.response?.status;
 
@@ -268,14 +388,5 @@ export async function POST(req: Request) {
       { error: 'Something went wrong, please try again.' },
       { status: 500 }
     );
-  } finally {
-    if (mcpClient) {
-      try {
-        const closeable = mcpClient as { close?: () => Promise<void> };
-        await closeable.close?.();
-      } catch (e: unknown) {
-        console.error('Failed to close MCP client', e);
-      }
-    }
   }
 }

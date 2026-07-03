@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getMcpClient } from '@/lib/mcp-client';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { callMcpTool } from '@/lib/mcp-client';
 
 // Type for the raw MCP callTool result
 type McpToolResult = {
@@ -28,7 +27,6 @@ async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 export async function POST(req: Request) {
-  let mcpClient: Client | null = null;
   try {
     const body = await req.json() as {
       recipient: unknown; delivery: unknown; sender: unknown;
@@ -36,19 +34,14 @@ export async function POST(req: Request) {
     };
     const { recipient, delivery, sender, gift_message, cart } = body;
 
-    mcpClient = await getMcpClient();
-
-    const result = await withRetry(() => mcpClient!.callTool({
-      name: 'kapruka_create_order',
-      arguments: {
-        params: {
-          cart,
-          recipient,
-          delivery,
-          sender,
-          gift_message: gift_message ?? null,
-          response_format: 'json',
-        },
+    const result = await withRetry(() => callMcpTool('kapruka_create_order', {
+      params: {
+        cart,
+        recipient,
+        delivery,
+        sender,
+        gift_message: gift_message ?? null,
+        response_format: 'json',
       },
     })) as McpToolResult;
 
@@ -105,13 +98,5 @@ export async function POST(req: Request) {
       { success: false, error: 'Something went wrong, please try again.' },
       { status: 500 }
     );
-  } finally {
-    if (mcpClient) {
-      try {
-        await mcpClient.close();
-      } catch (e: unknown) {
-        console.error('Failed to close MCP client (checkout):', e);
-      }
-    }
   }
 }

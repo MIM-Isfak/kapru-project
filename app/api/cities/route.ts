@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getMcpClient } from '@/lib/mcp-client';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { callMcpTool } from '@/lib/mcp-client';
 
 // Type for raw MCP callTool result
 type McpToolResult = {
@@ -8,24 +7,17 @@ type McpToolResult = {
 };
 
 export async function GET(req: Request) {
-  let mcpClient: Client | null = null;
   try {
     const { searchParams } = new URL(req.url);
     const q = searchParams.get('q');
 
-    mcpClient = await getMcpClient();
-    const client = mcpClient as { callTool: (a: unknown) => Promise<McpToolResult>; close: () => Promise<void> };
-
-    const result = await client.callTool({
-      name: 'kapruka_list_delivery_cities',
-      arguments: {
-        params: {
-          query: q || null,
-          limit: 10,
-          response_format: 'json',
-        },
+    const result = await callMcpTool('kapruka_list_delivery_cities', {
+      params: {
+        query: q || null,
+        limit: 10,
+        response_format: 'json',
       },
-    });
+    }) as McpToolResult;
 
     const textContent: string | undefined = result?.content?.[0]?.text;
     if (textContent) {
@@ -37,13 +29,5 @@ export async function GET(req: Request) {
   } catch (error: unknown) {
     console.error('Cities API error:', error);
     return NextResponse.json({ cities: [] });
-  } finally {
-    if (mcpClient) {
-      try {
-        await mcpClient.close();
-      } catch (e: unknown) {
-        console.error('Failed to close MCP client (cities API):', e);
-      }
-    }
   }
 }

@@ -50,11 +50,17 @@ export function ChatWindow() {
         body: JSON.stringify({ messages: newMessages }),
       });
 
-      if (!response.ok) {
-        throw new Error("Failed to send message");
-      }
-
       const data = await response.json();
+
+      if (!response.ok) {
+        // Surface the API-provided error message if there is one
+        const errText =
+          data?.error ||
+          (response.status === 429
+            ? "I'm getting a lot of requests right now \u2014 please wait a moment and try again."
+            : "Something went wrong. Please try again.");
+        throw new Error(errText);
+      }
 
       // Never add an empty assistant bubble — backend now guarantees a non-empty
       // reply, but guard here too just in case.
@@ -73,11 +79,15 @@ export function ChatWindow() {
 
       setMessages((prev) => [...prev, newAssistantMessage]);
       setProducts(data.products || []);
-    } catch (_error) {
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : "Sorry, something went wrong \u2014 please try again.";
       const errorMsg: ChatMessage = {
         id: Date.now().toString(),
         role: "assistant",
-        content: "Sorry, something went wrong — please try again.",
+        content: message,
         timestamp: Date.now(),
       };
       setMessages((prev) => [...prev, errorMsg]);
