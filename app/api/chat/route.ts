@@ -207,6 +207,26 @@ function detectTanglish(text: string): boolean {
   return count >= 2;
 }
 
+function getLocalizedSuccessMessage(isSinglish: boolean, isTanglish: boolean, lastUserText: string): string {
+  if (/[\u0D80-\u0DFF]/.test(lastUserText) || isSinglish) {
+    return 'මෙන්න ඔබට ගැළපෙන ප්‍රතිඵල කිහිපයක්!';
+  }
+  if (/[\u0B80-\u0BFF]/.test(lastUserText) || isTanglish) {
+    return 'இதோ உங்களுக்கான சில முடிவுகள்!';
+  }
+  return "Here are some options that might work for you!";
+}
+
+function getLocalizedNoResultsMessage(isSinglish: boolean, isTanglish: boolean, lastUserText: string): string {
+  if (/[\u0D80-\u0DFF]/.test(lastUserText) || isSinglish) {
+    return "මට හරියටම ගැළපෙන දේවල් හම්බුනේ නෑ — වෙන දෙයක් හොයන්නද?";
+  }
+  if (/[\u0B80-\u0BFF]/.test(lastUserText) || isTanglish) {
+    return "இதற்கு பொருத்தமான பொருட்கள் கிடைக்கவில்லை — வேறு தேடல் முயற்சிக்கலாமா?";
+  }
+  return "I couldn't find exact matches — want me to try a different search?";
+}
+
 // ─── Route handler ────────────────────────────────────────────────────────────
 
 export async function POST(req: Request) {
@@ -308,17 +328,37 @@ export async function POST(req: Request) {
       if (seemsNoResult && (seemsSearchIntent || isShortQuery)) {
         console.warn('[Chat API] SAFETY NET: Gemini returned no-result or empty text without calling the tool. Force-calling kapruka_search_products.');
         try {
-          const safetyQuery = simplifyQuery(lastUserText) || lastUserText.split(' ').slice(0, 2).join(' ');
+          let safetyQuery = simplifyQuery(lastUserText) || lastUserText.split(' ').slice(0, 2).join(' ');
+          
+          if (/[^\x00-\x7F]/.test(safetyQuery) || isSinglish || isTanglish) {
+            console.warn(`[Chat API] SAFETY NET: Query "${safetyQuery}" is non-English. Translating...`);
+            try {
+              const translationRes = await withRetry(async () => {
+                return await geminiRotator.current().models.generateContent({
+                  model: GEMINI_MODEL,
+                  contents: [{ role: 'user', parts: [{ text: `Translate the following shopping intent to a single simple English keyword (e.g. 'chocolate', 'electronics', 'gift'). Reply ONLY with the keyword. Text: "${safetyQuery}"` }] }],
+                  config: { temperature: 0.1, maxOutputTokens: 10 }
+                });
+              });
+              let keyword = translationRes.text?.trim().replace(/['"]/g, '');
+              console.log(`[Chat API] SAFETY NET RAW TRANSLATION: "${keyword}"`);
+              if (keyword && !/[^\x00-\x7F]/.test(keyword) && keyword.length < 50) {
+                console.log(`[Chat API] SAFETY NET: Translated "${safetyQuery}" -> "${keyword}"`);
+                safetyQuery = keyword;
+              } else {
+                console.warn(`[Chat API] SAFETY NET WARNING: Translation failed or returned non-English keyword. Proceeding with raw query.`);
+              }
+            } catch(e) {
+              console.error(`[Chat API] SAFETY NET: Translation request failed. Proceeding with raw query.`, e);
+            }
+          }
+          
           const safetyArgs = { params: { q: safetyQuery, limit: 8, response_format: 'json' } };
           const safetyResult = await callMcpTool('kapruka_search_products', safetyArgs) as McpToolResult;
           const safetyProducts = extractProductsFromToolResult('kapruka_search_products', safetyResult);
           if (safetyProducts.length > 0) {
             products.push(...safetyProducts);
-            finalResponseText = isSinglish
-              ? 'මෙන්න ඔබට ගැළපෙන ප්‍රතිඵල කිහිපයක්!'
-              : isTanglish
-              ? 'இதோ உங்களுக்கான சில முடிவுகள்!'
-              : 'Here are some options that might work for you!';
+            finalResponseText = getLocalizedSuccessMessage(isSinglish, isTanglish, lastUserText);
           }
         } catch (safetyErr) {
           console.warn('[Chat API] Safety net tool call also failed:', safetyErr instanceof Error ? safetyErr.message : String(safetyErr));
@@ -478,8 +518,8 @@ export async function POST(req: Request) {
     // Absolute last resort: never return an empty string to the client.
     if (!finalResponseText) {
       finalResponseText = products.length > 0
-        ? "Here are some options that might interest you!"
-        : "I couldn't find exact matches — want me to try a different search?";
+        ? getLocalizedSuccessMessage(isSinglish, isTanglish, lastUserText)
+        : getLocalizedNoResultsMessage(isSinglish, isTanglish, lastUserText);
     }
 
     // Log final state before responding
@@ -501,13 +541,13 @@ export async function POST(req: Request) {
         "here's what i found",
         'check out these',
         'i searched and found',
+        'මෙන්න', // Sinhala "here"
+        'இதோ'   // Tamil "here"
       ];
       const isFalseSuccess = falseSuccessPhrases.some(p => lower.includes(p));
       if (isFalseSuccess) {
         console.warn('[Chat API] Honesty guard triggered — overriding false success reply.');
-        finalResponseText =
-          "I couldn't find exact matches for that on Kapruka right now. " +
-          "Want me to try a different search term or category?";
+        finalResponseText = getLocalizedNoResultsMessage(isSinglish, isTanglish, lastUserText);
       }
     }
 
