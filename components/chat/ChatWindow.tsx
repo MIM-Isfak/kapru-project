@@ -39,6 +39,8 @@ export function ChatWindow() {
   ]);
   const [isLoading, setIsLoading] = useState(false);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
+  // Guard against rapid double-submissions (double-click, Enter spam)
+  const pendingRef = useRef(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -67,10 +69,19 @@ export function ChatWindow() {
 
   // ── Send handler ─────────────────────────────────────────────────────────
   const handleSend = async (text: string) => {
+    // Guard: prevent duplicate submissions
+    if (pendingRef.current || isLoading) return;
+    // Guard: ignore empty/whitespace messages
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    // Guard: truncate extremely long messages (>600 chars) gracefully
+    const safeText = trimmed.length > 600 ? trimmed.slice(0, 600) + '…' : trimmed;
+
+    pendingRef.current = true;
     const newUserMessage: ChatMessage = {
       id: Date.now().toString(),
       role: "user",
-      content: text,
+      content: safeText,
       timestamp: Date.now(),
     };
 
@@ -95,7 +106,7 @@ export function ChatWindow() {
           data?.error ||
           (response.status === 429
             ? "I'm getting a lot of requests right now \u2014 please wait a moment and try again."
-            : getKapruErrorMessage(text));
+            : getKapruErrorMessage(safeText));
         throw new Error(errText);
       }
 
@@ -121,7 +132,7 @@ export function ChatWindow() {
       const message =
         err instanceof Error
           ? err.message
-          : getKapruErrorMessage(text);
+          : getKapruErrorMessage(safeText);
       const errorMsg: ChatMessage = {
         id: Date.now().toString(),
         role: "assistant",
@@ -131,6 +142,7 @@ export function ChatWindow() {
       setMessages((prev) => [...prev, errorMsg]);
     } finally {
       setIsLoading(false);
+      pendingRef.current = false;
     }
   };
 

@@ -12,6 +12,8 @@ interface ChatInputProps {
 export function ChatInput({ onSend, disabled }: ChatInputProps) {
   const [text, setText] = useState("");
 
+  const hasText = text.trim().length > 0;
+
   const handleSend = () => {
     const trimmed = text.trim();
     if (trimmed && !disabled) {
@@ -39,8 +41,9 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
       />
       <button
         onClick={handleSend}
-        disabled={disabled}
-        className="flex items-center justify-center size-10 rounded-full bg-[var(--kapru-coral)] text-white disabled:opacity-50 flex-shrink-0"
+        disabled={disabled || !hasText}
+        aria-label="Send message"
+        className="flex items-center justify-center size-10 rounded-full bg-[var(--kapru-coral)] text-white disabled:opacity-40 flex-shrink-0 transition-opacity duration-150"
       >
         {disabled ? (
           <Loader2 size={18} className="animate-spin" />

@@ -177,16 +177,32 @@ function buildCallArgs(rawArgs: Record<string, unknown>, toolName: string): Reco
 
 function detectSinglish(text: string): boolean {
   if (!text) return false;
-  // Best-effort heuristic for Romanized Sinhala
+  // Best-effort heuristic for Romanized Sinhala (require 2+ distinct keyword matches)
+  // Words chosen to avoid overlap with English and Tanglish.
   const words = text.toLowerCase().split(/[^a-z]+/);
-  const singlishKeywords = [
-    "ekak", "ona", "kohomada", "mata", "oyage", "hondai", "epa", 
-    "puluwan", "oya", "mage", "api", "denna", "karanna", "gedara",
-    "thiyenawa", "nadda", "koheda"
-  ];
+  const singlishKeywords = new Set([
+    "ekak", "ona", "kohomada", "mata", "oyage", "hondai", "epa",
+    "puluwan", "oya", "mage", "denna", "karanna", "gedara",
+    "thiyenawa", "nadda", "koheda", "kiyala", "balanna"
+  ]);
   let count = 0;
   for (const w of words) {
-    if (singlishKeywords.includes(w)) count++;
+    if (singlishKeywords.has(w)) count++;
+  }
+  return count >= 2;
+}
+
+function detectTanglish(text: string): boolean {
+  if (!text) return false;
+  // Best-effort heuristic for Romanized Tamil
+  const words = text.toLowerCase().split(/[^a-z]+/);
+  const tanglishKeywords = new Set([
+    "venum", "illai", "theriyum", "solla", "enna", "naan", "unakku",
+    "sollu", "paarunga", "kudunga", "thaanga", "romba", "paathaan"
+  ]);
+  let count = 0;
+  for (const w of words) {
+    if (tanglishKeywords.has(w)) count++;
   }
   return count >= 2;
 }
@@ -235,22 +251,89 @@ export async function POST(req: Request) {
     contents = collapsedContents;
 
     const lastUserMessage = messages.filter(m => m.role === 'user').pop();
-    const isSinglish = detectSinglish(lastUserMessage?.content || '');
+    const lastUserText = lastUserMessage?.content || '';
+    const isSinglish = detectSinglish(lastUserText);
+    const isTanglish = !isSinglish && detectTanglish(lastUserText);
     let dynamicSystemPrompt = SYSTEM_PROMPT;
     if (isSinglish) {
-      dynamicSystemPrompt += "\n\nCRITICAL HEURISTIC OVERRIDE: The user's last message contains multiple Singlish (Romanized Sinhala) words. You MUST reply in native Sinhala script (Unicode).";
+      dynamicSystemPrompt += "\n\nCRITICAL HEURISTIC OVERRIDE: The user's last message contains Singlish (Romanized Sinhala) words. You MUST reply in native Sinhala Unicode script.";
+    } else if (isTanglish) {
+      dynamicSystemPrompt += "\n\nCRITICAL HEURISTIC OVERRIDE: The user's last message contains Tanglish (Romanized Tamil) words. You MUST reply in Tamil script or Tanglish.";
     }
 
     let finalResponseText = '';
     const products: Product[] = [];
     const allFunctionCalls: FunctionCall[] = [];
 
+    // 25-second overall timeout — if nothing resolves, bail with a friendly error
+    const timeoutMs = 25000;
+    let timeoutHandle: ReturnType<typeof setTimeout>;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error('REQUEST_TIMEOUT')), timeoutMs);
+    });
+
+    try { await Promise.race([runConversationLoop(), timeoutPromise]); }
+    catch (loopErr: unknown) {
+      const msg = (loopErr instanceof Error ? loopErr.message : String(loopErr));
+      if (msg === 'REQUEST_TIMEOUT') {
+        console.warn('[Chat API] Request timed out after 25s — returning friendly error.');
+        const errMsg = /[\u0D80-\u0DFF]/.test(lastUserText)
+          ? 'ඕයෝ, Kapru ට ඒ ගාන ප්‍රතිචාරය ලැබීමට ටිකක් කාලය ගතවුණා — නැවත try කරන්නකෝ?'
+          : /[\u0B80-\u0BFF]/.test(lastUserText)
+          ? 'அய்யோ, Kapru-க்கு சற்று தாமதமாகிவிட்டது — மீண்டும் முயற்சிக்கவும்.'
+          : "Hmm, Kapru took a bit too long there — mind trying again?";
+        return NextResponse.json({ reply: errMsg, products: [], stage: 'discovery' });
+      }
+      throw loopErr;
+    } finally {
+      clearTimeout(timeoutHandle!);
+    }
+
+    // ── Safety net: if Gemini replied with a no-result phrase but called no tool,
+    //    or returned completely empty text without calling a tool,
+    //    force-call kapruka_search_products with the raw user message as the query.
+    //    This handles the rare case where the model ignores the mandatory tool rule.
+    if (allFunctionCalls.length === 0 && mcpClient) {
+      const lower = (finalResponseText || "").toLowerCase();
+      const noResultPhrases = ["couldn't find", "could not find", "no results", "not available", "try a different"];
+      const seemsNoResult = !finalResponseText || noResultPhrases.some(p => lower.includes(p));
+      const seemsSearchIntent = [
+        "show", "want", "need", "looking", "search", "find", "get me", "give me", "send",
+        "ekak", "ona", "thaanga", "kudunga", "venum", "illai"
+      ].some(kw => lastUserText.toLowerCase().includes(kw));
+
+      // Also trigger if the query is just a single/double noun phrase like "chocolates"
+      const isShortQuery = lastUserText.split(' ').length <= 3 && lastUserText.length > 2;
+
+      if (seemsNoResult && (seemsSearchIntent || isShortQuery)) {
+        console.warn('[Chat API] SAFETY NET: Gemini returned no-result or empty text without calling the tool. Force-calling kapruka_search_products.');
+        try {
+          const safetyQuery = simplifyQuery(lastUserText) || lastUserText.split(' ').slice(0, 2).join(' ');
+          const safetyArgs = { params: { q: safetyQuery, limit: 8, response_format: 'json' } };
+          const safetyResult = await callMcpTool('kapruka_search_products', safetyArgs) as McpToolResult;
+          const safetyProducts = extractProductsFromToolResult('kapruka_search_products', safetyResult);
+          if (safetyProducts.length > 0) {
+            products.push(...safetyProducts);
+            finalResponseText = isSinglish
+              ? 'මෙන්න ඔබට ගැළපෙන ප්‍රතිඵල කිහිපයක්!'
+              : isTanglish
+              ? 'இதோ உங்களுக்கான சில முடிவுகள்!'
+              : 'Here are some options that might work for you!';
+          }
+        } catch (safetyErr) {
+          console.warn('[Chat API] Safety net tool call also failed:', safetyErr instanceof Error ? safetyErr.message : String(safetyErr));
+        }
+      }
+    }
+
+    async function runConversationLoop() {
     let iterations = 0;
     while (iterations < 5) {
       iterations++;
 
       const config: Record<string, unknown> = {
         systemInstruction: dynamicSystemPrompt,
+        temperature: 0.45,
       };
 
       if (toolDeclarations.length > 0) {
@@ -378,6 +461,7 @@ export async function POST(req: Request) {
         parts: toolResponseParts,
       });
     }
+    } // end runConversationLoop
 
     // ── Fallback: if the loop exhausted iterations without producing text, force
     //    one final generation without tools so the model must produce a summary.
