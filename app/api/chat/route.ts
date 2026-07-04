@@ -386,6 +386,11 @@ export async function POST(req: Request) {
 
     const lastUserMessage = messages.filter(m => m.role === 'user').pop();
     const lastUserText = lastUserMessage?.content || '';
+    
+    // Extract price constraints (e.g., "under 5000", "below rs 2000")
+    const priceMatch = lastUserText.match(/(?:under|below|less than)\s*(?:rs\.?|lkr)?\s*(\d+)/i);
+    const maxPriceConstraint = priceMatch ? parseInt(priceMatch[1], 10) : null;
+
     const isSinglish = detectSinglish(lastUserText);
     const isTanglish = !isSinglish && detectTanglish(lastUserText);
     let dynamicSystemPrompt = SYSTEM_PROMPT;
@@ -549,6 +554,11 @@ export async function POST(req: Request) {
 
           let extracted = extractProductsFromToolResult(toolName, result);
 
+          if (maxPriceConstraint !== null) {
+            extracted = extracted.filter(p => p.price <= maxPriceConstraint);
+            console.log(`[Chat API] Applied price filter: <= ${maxPriceConstraint}. Products remaining: ${extracted.length}`);
+          }
+
           // BUG 3 FIX: Retry logic for 0 results on kapruka_search_products
           if (toolName === 'kapruka_search_products' && extracted.length === 0) {
             // Fix: the parameter name is 'q', not 'query'
@@ -562,6 +572,9 @@ export async function POST(req: Request) {
               result = await callMcpTool(toolName, fallbackArgs) as McpToolResult;
               toolResult = result;
               extracted = extractProductsFromToolResult(toolName, result);
+              if (maxPriceConstraint !== null) {
+                extracted = extracted.filter(p => p.price <= maxPriceConstraint);
+              }
             }
           }
 
