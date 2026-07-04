@@ -6,7 +6,7 @@ import { ChatInput } from "./ChatInput";
 import { ProductCard } from "@/components/products/ProductCard";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Sparkles } from "lucide-react";
-import { ChatMessage, Product } from "@/lib/types";
+import { ChatMessage } from "@/lib/types";
 import { useCart } from "@/lib/cart-context";
 
 export function ChatWindow() {
@@ -19,16 +19,15 @@ export function ChatWindow() {
       timestamp: 1700000000000,
     },
   ]);
-  const [products, setProducts] = useState<Product[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  
+
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollIntoView({ behavior: "smooth" });
     }
-  }, [messages, isLoading, products]);
+  }, [messages, isLoading]);
 
   const handleSend = async (text: string) => {
     const newUserMessage: ChatMessage = {
@@ -40,7 +39,6 @@ export function ChatWindow() {
 
     const newMessages = [...messages, newUserMessage];
     setMessages(newMessages);
-    setProducts([]);
     setIsLoading(true);
 
     try {
@@ -53,7 +51,6 @@ export function ChatWindow() {
       const data = await response.json();
 
       if (!response.ok) {
-        // Surface the API-provided error message if there is one
         const errText =
           data?.error ||
           (response.status === 429
@@ -75,10 +72,13 @@ export function ChatWindow() {
         content: replyText,
         timestamp: Date.now(),
         stage: data.stage,
+        // Permanently embed products inside this message object
+        products: Array.isArray(data.products) && data.products.length > 0
+          ? data.products
+          : undefined,
       };
 
       setMessages((prev) => [...prev, newAssistantMessage]);
-      setProducts(data.products || []);
     } catch (err: unknown) {
       const message =
         err instanceof Error
@@ -96,8 +96,6 @@ export function ChatWindow() {
     }
   };
 
-  const lastAssistantMessageId = messages.slice().reverse().find(m => m.role === "assistant")?.id;
-
   return (
     <div className="flex flex-col h-full">
       <ScrollArea className="flex-1 min-h-0 p-4">
@@ -105,10 +103,11 @@ export function ChatWindow() {
           {messages.map((msg) => (
             <div key={msg.id} className="flex flex-col">
               <MessageBubble message={msg} />
-              
-              {msg.id === lastAssistantMessageId && products.length > 0 && (
+
+              {/* Each assistant message permanently owns its product results */}
+              {msg.role === "assistant" && msg.products && msg.products.length > 0 && (
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3 ml-2 sm:ml-10">
-                  {products.map((product) => (
+                  {msg.products.map((product) => (
                     <ProductCard
                       key={product.id}
                       product={product}

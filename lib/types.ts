@@ -22,4 +22,5 @@ export interface ChatMessage {
   content: string;
   timestamp: number;
   stage?: 'discovery' | 'checkout';
+  products?: Product[];
 }
