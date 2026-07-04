@@ -100,26 +100,40 @@ export function ChatWindow() {
     <div className="flex flex-col h-full">
       <ScrollArea className="flex-1 min-h-0 p-4">
         <div className="flex flex-col gap-3 pb-4">
-          {messages.map((msg) => (
-            <div key={msg.id} className="flex flex-col">
-              <MessageBubble message={msg} />
+          {messages.map((msg, index) => {
+            // Hide error assistant messages that were superseded by a successful retry:
+            // if this message looks like a failure AND the next message is also assistant, skip it.
+            const isErrorMessage =
+              msg.role === "assistant" &&
+              (msg.content.toLowerCase().includes("couldn't find") ||
+                msg.content.toLowerCase().includes("could not find") ||
+                msg.content.toLowerCase().includes("something went wrong"));
+            const nextMsg = messages[index + 1];
+            const isSupersededByRetry = isErrorMessage && nextMsg?.role === "assistant";
 
-              {/* Each assistant message permanently owns its product results */}
-              {msg.role === "assistant" && msg.products && msg.products.length > 0 && (
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3 ml-2 sm:ml-10">
-                  {msg.products.map((product) => (
-                    <ProductCard
-                      key={product.id}
-                      product={product}
-                      originalPrice={product.originalPrice}
-                      onAddToCart={(p) => addToCart(p)}
-                      onCompare={(p) => console.log("compare", p.name)}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-          ))}
+            if (isSupersededByRetry) return null;
+
+            return (
+              <div key={msg.id} className="flex flex-col">
+                <MessageBubble message={msg} />
+
+                {/* Each assistant message permanently owns its product results */}
+                {msg.role === "assistant" && msg.products && msg.products.length > 0 && (
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3 ml-2 sm:ml-10">
+                    {msg.products.map((product) => (
+                      <ProductCard
+                        key={product.id}
+                        product={product}
+                        originalPrice={product.originalPrice}
+                        onAddToCart={(p) => addToCart(p)}
+                        onCompare={(p) => console.log("compare", p.name)}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
 
           {isLoading && (
             <div className="flex gap-2 w-full max-w-[75%] mt-1">
