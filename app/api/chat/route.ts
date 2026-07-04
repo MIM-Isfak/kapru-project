@@ -90,13 +90,108 @@ function mapKaprukaItemToProduct(item: KaprukaItem, isSingleProduct: boolean): P
   };
 }
 
-const ADULT_KEYWORDS = [
-  'sex toy', 'lubricant', 'vibrator', 'lingerie', 'adult toy', 'condom', 'dildo', 'masturbator', 'erotic'
+// ─── Adult/explicit content filter ─────────────────────────────────────────
+// Every product returned by kapruka_search_products passes through this filter
+// unconditionally — regardless of the search query. It is a permanent safety
+// net. ANY match on name, category, OR description causes the product to be
+// excluded from results sent to the client.
+//
+// Terms are matched as substrings (case-insensitive), so 'penis' matches
+// 'penis enlargement', 'penises', etc.
+
+const ADULT_CONTENT_TERMS: string[] = [
+  // ── Explicit sexual body parts / terms ──────────────────────────────────
+  'cock ring',
+  'cock ',          // with trailing space to avoid false positive on 'peacock'
+  ' cock',          // with leading space
+  'penis',
+  'vagina',
+  'anal',
+  'anus',
+  'rectum',
+  'vulva',
+  'clitoris',
+  'testicle',
+  'scrotum',
+  'erection',
+  'ejaculat',
+  'orgasm',
+  'masturbat',
+  // ── Adult product categories ─────────────────────────────────────────────
+  'sex toy',
+  'adult toy',
+  'sex doll',
+  'vibrator',
+  'dildo',
+  'butt plug',
+  'strap-on',
+  'strapon',
+  'fleshlight',
+  'pocket pussy',
+  'male masturbator',
+  'female masturbator',
+  'sex machine',
+  // ── Condoms / lubricants ─────────────────────────────────────────────────
+  'condom',
+  'contraceptive',
+  'lubricant',
+  'lube',
+  'sex lubricant',
+  'intimate lubricant',
+  'delay spray',
+  'enlargement',      // catches penis enlargement, breast enlargement products
+  'enhancement pill',
+  'erection pill',
+  'erectile',
+  'sexual enhancer',
+  // ── Explicit adult fashion / lingerie ────────────────────────────────────
+  'lingerie',
+  'crotchless',
+  'nipple',
+  'fetish',
+  'bdsm',
+  'bondage',
+  'handcuff',         // sexual context
+  'sex wear',
+  'sexy costume',
+  // ── Explicit brand / generic terms ──────────────────────────────────────
+  'kama sutra',
+  'kamasutra',
+  'erotic',
+  'pornograph',
+  'xxx',
+  'hentai',
+  'adult entertainment',
+  // ── Explicit phrases seen in actual catalog data ─────────────────────────
+  'penis enlargement',
+  'penisenlargement',   // tag variant without space (from catalog desc)
+  'reusable cock',
+  'cockring',           // catalog tag variant without space
+  'delaycockring',      // catalog tag variant
+  'adultproducts',      // catalog category tag
+  'men\'s penis',
+  'for penis',
 ];
 
+/**
+ * Returns true if the product appears to be adult/explicit content.
+ * Checked against name, category, AND description — all lowercased.
+ * Always-on: never call this conditionally based on query type.
+ */
 function isAdultProduct(product: Product): boolean {
-  const searchString = `${product.name} ${product.category} ${product.description}`.toLowerCase();
-  return ADULT_KEYWORDS.some(keyword => searchString.includes(keyword));
+  const haystack = [
+    product.name ?? '',
+    product.category ?? '',
+    product.description ?? '',
+  ].join(' ').toLowerCase();
+
+  for (const term of ADULT_CONTENT_TERMS) {
+    if (haystack.includes(term)) {
+      console.log(`[ContentFilter] BLOCKED: "${product.name}" matched term: "${term}"`);
+      return true;
+    }
+  }
+  return false;
 }
 
 function extractProductsFromToolResult(toolName: string, rawResult: McpToolResult): Product[] {
