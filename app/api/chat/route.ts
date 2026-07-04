@@ -123,8 +123,8 @@ function simplifyQuery(q: string): string | null {
   // Remove price constraints like "under 5000", "below rs. 5000"
   let simplified = original.replace(/(under|below|less than)\s*(rs\.?|lkr)?\s*\d+/gi, '').trim();
   
-  // Remove generic trailing words
-  simplified = simplified.replace(/\b(things|items)\b/gi, '').trim();
+  // Remove generic trailing words and intent verbs (English, Singlish, Tanglish)
+  simplified = simplified.replace(/\b(things|items|show|me|some|want|need|ekak|ona|thaanga|kudunga|denna)\b/gi, '').trim();
 
   // Strip gender/age prefixes
   simplified = simplified.replace(/\b(kids|mens|womens|men|women|boys|girls)\b/gi, '').trim();
@@ -133,11 +133,11 @@ function simplifyQuery(q: string): string | null {
     return simplified;
   }
   
-  // If multiple words, try the last word (e.g. "birthday gifts" -> "gifts", "kids toys" -> "toys")
-  const words = original.split(/\s+/);
-  if (words.length > 1) {
-    const lastWord = words[words.length - 1];
-    if (lastWord.length > 2) return lastWord;
+  // If it's still exactly the same, or became empty, try grabbing the longest significant word
+  const words = original.split(/\s+/).filter(w => w.length > 3 && !['show', 'some', 'with'].includes(w));
+  if (words.length > 0) {
+    const longest = words.reduce((a, b) => a.length > b.length ? a : b);
+    if (longest !== original && longest.length > 2) return longest;
   }
 
   return null;
@@ -173,6 +173,22 @@ function buildCallArgs(rawArgs: Record<string, unknown>, toolName: string): Reco
       response_format: 'json',
     },
   };
+}
+
+function detectSinglish(text: string): boolean {
+  if (!text) return false;
+  // Best-effort heuristic for Romanized Sinhala
+  const words = text.toLowerCase().split(/[^a-z]+/);
+  const singlishKeywords = [
+    "ekak", "ona", "kohomada", "mata", "oyage", "hondai", "epa", 
+    "puluwan", "oya", "mage", "api", "denna", "karanna", "gedara",
+    "thiyenawa", "nadda", "koheda"
+  ];
+  let count = 0;
+  for (const w of words) {
+    if (singlishKeywords.includes(w)) count++;
+  }
+  return count >= 2;
 }
 
 // ─── Route handler ────────────────────────────────────────────────────────────
@@ -218,6 +234,13 @@ export async function POST(req: Request) {
     }
     contents = collapsedContents;
 
+    const lastUserMessage = messages.filter(m => m.role === 'user').pop();
+    const isSinglish = detectSinglish(lastUserMessage?.content || '');
+    let dynamicSystemPrompt = SYSTEM_PROMPT;
+    if (isSinglish) {
+      dynamicSystemPrompt += "\n\nCRITICAL HEURISTIC OVERRIDE: The user's last message contains multiple Singlish (Romanized Sinhala) words. You MUST reply in native Sinhala script (Unicode).";
+    }
+
     let finalResponseText = '';
     const products: Product[] = [];
     const allFunctionCalls: FunctionCall[] = [];
@@ -227,7 +250,7 @@ export async function POST(req: Request) {
       iterations++;
 
       const config: Record<string, unknown> = {
-        systemInstruction: SYSTEM_PROMPT,
+        systemInstruction: dynamicSystemPrompt,
       };
 
       if (toolDeclarations.length > 0) {
