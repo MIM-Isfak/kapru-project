@@ -12,8 +12,8 @@ type McpToolResult = {
 };
 
 /**
- * Retries fn() on quota/rate-limit errors, rotating to the next Gemini API key
- * on each 429. Gives up only after every key in the pool has been tried.
+ * Retries fn() on quota/rate-limit/network errors, rotating to the next Gemini API key
+ * on each failure. Gives up only after every key in the pool has been tried.
  */
 async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
   const totalKeys = geminiRotator.keyCount;
@@ -25,19 +25,26 @@ async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
     } catch (error: unknown) {
       const msg = (error instanceof Error ? error.message : String(error)).toLowerCase();
       const status = (error as { status?: number })?.status;
-      const isQuotaError =
+      
+      // Catch rate limits (429), quota exhaustion, and temporary API outages (503, 500, fetch failed)
+      const isRetryableError =
         msg.includes('rate limit') ||
         msg.includes('429') ||
         msg.includes('resource_exhausted') ||
         msg.includes('quota') ||
-        status === 429;
+        msg.includes('503') ||
+        msg.includes('unavailable') ||
+        msg.includes('fetch failed') ||
+        msg.includes('timeout') ||
+        status === 429 ||
+        status === 503;
 
-      if (isQuotaError) {
+      if (isRetryableError) {
         triedCount++;
         const { rotated } = geminiRotator.rotateOnQuota(triedCount);
         if (!rotated) {
           // All keys exhausted
-          console.error(`[Gemini] All ${totalKeys} API key(s) exhausted. Throwing.`);
+          console.error(`[Gemini] All ${totalKeys} API key(s) exhausted (or network failed). Throwing.`);
           throw error;
         }
         // Small backoff before retrying with new key
@@ -284,13 +291,14 @@ export async function POST(req: Request) {
 
           // BUG 3 FIX: Retry logic for 0 results on kapruka_search_products
           if (toolName === 'kapruka_search_products' && extracted.length === 0) {
-            const q = (callArgs as any)?.params?.query;
+            // Fix: the parameter name is 'q', not 'query'
+            const q = (callArgs as any)?.params?.q;
             console.warn(`[Chat API] SEARCH FAILED for "${q}". Raw MCP Response:`, JSON.stringify(result).slice(0, 500));
             
             const simpler = typeof q === 'string' ? simplifyQuery(q) : null;
             if (simpler) {
               console.log(`[Chat API] Retrying search with simplified query: "${simpler}"`);
-              const fallbackArgs = { ...callArgs, params: { ...(callArgs as any).params, query: simpler } };
+              const fallbackArgs = { ...callArgs, params: { ...(callArgs as any).params, q: simpler } };
               result = await callMcpTool(toolName, fallbackArgs) as McpToolResult;
               toolResult = result;
               extracted = extractProductsFromToolResult(toolName, result);
