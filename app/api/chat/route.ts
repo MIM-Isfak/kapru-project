@@ -109,6 +109,33 @@ function extractProductsFromToolResult(toolName: string, rawResult: McpToolResul
   return products;
 }
 
+function simplifyQuery(q: string): string | null {
+  if (!q) return null;
+  const original = q.toLowerCase();
+  
+  // Remove price constraints like "under 5000", "below rs. 5000"
+  let simplified = original.replace(/(under|below|less than)\s*(rs\.?|lkr)?\s*\d+/gi, '').trim();
+  
+  // Remove generic trailing words
+  simplified = simplified.replace(/\b(things|items)\b/gi, '').trim();
+
+  // Strip gender/age prefixes
+  simplified = simplified.replace(/\b(kids|mens|womens|men|women|boys|girls)\b/gi, '').trim();
+
+  if (simplified && simplified !== original && simplified.length > 2) {
+    return simplified;
+  }
+  
+  // If multiple words, try the last word (e.g. "birthday gifts" -> "gifts", "kids toys" -> "toys")
+  const words = original.split(/\s+/);
+  if (words.length > 1) {
+    const lastWord = words[words.length - 1];
+    if (lastWord.length > 2) return lastWord;
+  }
+
+  return null;
+}
+
 /**
  * Build the callTool arguments, ensuring response_format: 'json' is always
  * set inside the `params` object — regardless of whether Gemini sent the args
@@ -250,17 +277,31 @@ export async function POST(req: Request) {
         let extractedCount = 0;
         try {
           console.log(`[Chat API] Invoking tool: ${toolName}`, JSON.stringify(callArgs));
-          const result = await callMcpTool(toolName, callArgs) as McpToolResult;
+          let result = await callMcpTool(toolName, callArgs) as McpToolResult;
           toolResult = result;
 
-          // Extract products from search and get_product tool results
-          const extracted = extractProductsFromToolResult(toolName, result);
+          let extracted = extractProductsFromToolResult(toolName, result);
+
+          // BUG 3 FIX: Retry logic for 0 results on kapruka_search_products
+          if (toolName === 'kapruka_search_products' && extracted.length === 0) {
+            const q = (callArgs as any)?.params?.query;
+            console.warn(`[Chat API] SEARCH FAILED for "${q}". Raw MCP Response:`, JSON.stringify(result).slice(0, 500));
+            
+            const simpler = typeof q === 'string' ? simplifyQuery(q) : null;
+            if (simpler) {
+              console.log(`[Chat API] Retrying search with simplified query: "${simpler}"`);
+              const fallbackArgs = { ...callArgs, params: { ...(callArgs as any).params, query: simpler } };
+              result = await callMcpTool(toolName, fallbackArgs) as McpToolResult;
+              toolResult = result;
+              extracted = extractProductsFromToolResult(toolName, result);
+            }
+          }
+
           extractedCount = extracted.length;
           products.push(...extracted);
 
-          // Log the real result count so we can diagnose empty-result bugs
           if (toolName === 'kapruka_search_products' || toolName === 'kapruka_get_product') {
-            console.log(`[Chat API] ${toolName} → ${extractedCount} product(s) extracted. args:`, JSON.stringify(callArgs));
+            console.log(`[Chat API] ${toolName} → ${extractedCount} product(s) extracted.`);
           }
         } catch (e: unknown) {
           const errMsg = e instanceof Error ? e.message : String(e);

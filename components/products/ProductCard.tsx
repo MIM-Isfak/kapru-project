@@ -33,6 +33,10 @@ export function ProductCard({
     : 0;
   const isOutOfStock = !product.inStock;
   const [added, setAdded] = useState(false);
+  const [imgError, setImgError] = useState(false);
+
+  // Check if image is obviously a placeholder or missing
+  const hasValidImage = product.image && product.image.trim() !== '' && !product.image.includes('placeholder') && !imgError;
 
   return (
     <Card
@@ -45,16 +49,27 @@ export function ProductCard({
       }}
     >
       {/* ── Image area ──────────────────────────────────────────── */}
-      <div className="relative w-full aspect-square overflow-hidden rounded-xl mx-0">
-        <Image
-          src={product.image}
-          alt={product.name}
-          fill
-          sizes="(max-width: 640px) 50vw, (max-width: 1024px) 33vw, 25vw"
-          className={`object-cover object-top transition-transform duration-300 group-hover:scale-105 ${
-            isOutOfStock ? "opacity-60" : ""
-          }`}
-        />
+      <div className="relative w-full aspect-square overflow-hidden rounded-xl mx-0 flex items-center justify-center bg-[var(--kapru-teal-light)]">
+        {hasValidImage ? (
+          <Image
+            src={product.image}
+            alt={product.name}
+            fill
+            sizes="(max-width: 640px) 50vw, (max-width: 1024px) 33vw, 25vw"
+            className={`object-cover object-top transition-transform duration-300 group-hover:scale-105 ${
+              isOutOfStock ? "opacity-60" : ""
+            }`}
+            onError={() => {
+              console.warn("Product image failed to load:", product.image);
+              setImgError(true);
+            }}
+          />
+        ) : (
+          <div className="flex flex-col items-center justify-center text-[var(--kapru-teal)] opacity-50">
+            <span className="font-bold text-lg tracking-wider uppercase">Kapru</span>
+            <span className="text-xs font-medium">No Image</span>
+          </div>
+        )}
 
         {/* Discount ribbon */}
         {hasDiscount && !isOutOfStock && (
