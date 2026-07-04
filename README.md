@@ -32,6 +32,9 @@ A full-screen conversational AI shopping agent for [Kapruka.com](https://www.kap
 - 📦 **Full guest checkout flow** → real Kapruka order creation via MCP
 - 📱 **Mobile-responsive design** — works great on phones over Wi-Fi
 
+### Note on API Quota
+This app uses the free-tier Gemini API (`gemini-2.5-flash`). To maximize throughput and avoid rate limits, the backend automatically rotates across multiple API keys/projects. If all keys are temporarily exhausted, it gracefully shows a localized "please wait a moment" message instead of crashing or showing a generic error.
+
 ---
 
 ## Getting Started Locally
@@ -45,8 +48,14 @@ A full-screen conversational AI shopping agent for [Kapruka.com](https://www.kap
 
 2. **Create a `.env.local` file** in the project root:
    ```
-   GEMINI_API_KEY=your_key_here
+   GEMINI_API_KEY_1=your_key_here
+   GEMINI_API_KEY_2=your_key_here
+   GEMINI_API_KEY_3=your_key_here
+   GEMINI_API_KEY_4=your_key_here
+   GEMINI_API_KEY_5=your_key_here
+   GEMINI_API_KEY_6=your_key_here
    ```
+   *(A single `GEMINI_API_KEY` is also supported as a fallback, but multiple keys are recommended since the free tier has per-minute rate limits.)*
 
 3. **Start the dev server**
    ```bash
