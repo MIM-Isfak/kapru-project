@@ -90,6 +90,15 @@ function mapKaprukaItemToProduct(item: KaprukaItem, isSingleProduct: boolean): P
   };
 }
 
+const ADULT_KEYWORDS = [
+  'sex toy', 'lubricant', 'vibrator', 'lingerie', 'adult toy', 'condom', 'dildo', 'masturbator', 'erotic'
+];
+
+function isAdultProduct(product: Product): boolean {
+  const searchString = `${product.name} ${product.category} ${product.description}`.toLowerCase();
+  return ADULT_KEYWORDS.some(keyword => searchString.includes(keyword));
+}
+
 function extractProductsFromToolResult(toolName: string, rawResult: McpToolResult): Product[] {
   const products: Product[] = [];
   try {
@@ -102,12 +111,18 @@ function extractProductsFromToolResult(toolName: string, rawResult: McpToolResul
     if (toolName === 'kapruka_search_products') {
       if (Array.isArray(parsed.results)) {
         for (const item of parsed.results) {
-          products.push(mapKaprukaItemToProduct(item, false));
+          const product = mapKaprukaItemToProduct(item, false);
+          if (!isAdultProduct(product)) {
+            products.push(product);
+          }
         }
       }
     } else if (toolName === 'kapruka_get_product') {
       if (parsed.name) {
-        products.push(mapKaprukaItemToProduct(parsed, true));
+        const product = mapKaprukaItemToProduct(parsed, true);
+        if (!isAdultProduct(product)) {
+          products.push(product);
+        }
       }
     }
   } catch {
