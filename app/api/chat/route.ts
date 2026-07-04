@@ -231,7 +231,11 @@ function getLocalizedNoResultsMessage(isSinglish: boolean, isTanglish: boolean, 
 
 export async function POST(req: Request) {
   try {
-    const { messages } = await req.json() as { messages: ChatMessage[] };
+    const { messages } = await req.json();
+
+    if (!messages || !Array.isArray(messages)) {
+      return NextResponse.json({ error: 'Invalid messages format' }, { status: 400 });
+    }
 
     // MCP connection is best-effort — if the Kapruka server is unreachable we
     // degrade gracefully to a text-only assistant rather than throwing a 500.
@@ -561,27 +565,43 @@ export async function POST(req: Request) {
       console.error('Error stack:', error.stack);
     }
 
-    const errObj = error as { status?: number; response?: { status?: number } };
+    const errObj = error as { status?: number; response?: { status?: number }, cause?: { message?: string, code?: string } };
     const msg = (error instanceof Error ? error.message : String(error)).toLowerCase();
+    const causeMsg = (errObj?.cause?.message || '').toLowerCase();
+    const causeCode = (errObj?.cause?.code || '').toLowerCase();
     const status = errObj?.status || errObj?.response?.status;
 
     if (msg.includes('429') || msg.includes('quota') || msg.includes('rate limit') || msg.includes('resource_exhausted') || status === 429) {
       return NextResponse.json(
-        { error: "I'm getting a lot of requests right now — please wait a few seconds and try again." },
+        { error: "RATE_LIMIT" },
         { status: 429 }
+      );
+    }
+
+    if (
+      msg.includes('fetch failed') || 
+      msg.includes('timeout') || 
+      causeMsg.includes('connecttimeout') || 
+      causeMsg.includes('timeout') || 
+      causeCode.includes('etimedout') || 
+      causeCode.includes('econnreset')
+    ) {
+      return NextResponse.json(
+        { error: "NETWORK_ERROR" },
+        { status: 503 }
       );
     }
 
     if (msg.includes('401') || msg.includes('403') || msg.includes('key') || msg.includes('auth') || status === 401 || status === 403) {
       console.error('API KEY INVALID OR MISSING');
       return NextResponse.json(
-        { error: "There's a configuration issue on our end — please contact support." },
+        { error: "UNKNOWN" }, // Config issues can be treated as generic unknown for the user
         { status: 500 }
       );
     }
 
     return NextResponse.json(
-      { error: 'Something went wrong, please try again.' },
+      { error: 'UNKNOWN' },
       { status: 500 }
     );
   }

@@ -12,17 +12,30 @@ import { useCart } from "@/lib/cart-context";
 // ── Kapru-voiced terminal error messages ──────────────────────────────────────
 // Used only when the API call fails completely (no successful retry follows).
 const KAPRU_ERROR_MESSAGES = {
-  en: "Hmm, Kapru hit a snag there — mind trying that again?",
-  si: "ඕයෝ, Kapru ට ඒ ගාන අස්සේ ගැටලුවක් ආවා — ටිකක් wait කරලා try කරන්නකෝ?",
-  ta: "அய்யோ, Kapru-க்கு சிறு சிக்கல் ஏற்பட்டது — மீண்டும் முயற்சிக்கவும்?",
+  generic: {
+    en: "Hmm, Kapru hit a snag there — mind trying that again?",
+    si: "ඕයෝ, Kapru ට ඒ ගාන අස්සේ ගැටලුවක් ආවා — ටිකක් wait කරලා try කරන්නකෝ?",
+    ta: "அய்யோ, Kapru-க்கு சிறு சிக்கல் ஏற்பட்டது — மீண்டும் முயற்சிக்கவும்?",
+  },
+  rate_limit: {
+    en: "I'm getting a lot of requests right now — please wait a few seconds and try again.",
+    si: "දැන් මට requests ගොඩක් එනවා — කරුණාකර තත්පර කිහිපයක් රැඳී සිට නැවත උත්සාහ කරන්න.",
+    ta: "தற்போது எனக்கு நிறைய கோரிக்கைகள் வருகின்றன — தயவுசெய்து சில நொடிகள் காத்திருந்து மீண்டும் முயற்சிக்கவும்."
+  },
+  network: {
+    en: "It looks like my connection dropped — could you check your internet and try again?",
+    si: "මගේ connection එක නැති වුණා වගේ — කරුණාකර ඔබගේ internet එක පරීක්ෂා කර නැවත උත්සාහ කරන්නද?",
+    ta: "என்னுடைய இணைப்பு துண்டிக்கப்பட்டதாகத் தெரிகிறது — உங்கள் இணையத்தை சரிபார்த்து மீண்டும் முயற்சிக்க முடியுமா?"
+  }
 };
 
-function getKapruErrorMessage(lastUserContent: string): string {
+function getKapruErrorMessage(type: 'generic' | 'rate_limit' | 'network', lastUserContent: string): string {
+  const messages = KAPRU_ERROR_MESSAGES[type] || KAPRU_ERROR_MESSAGES.generic;
   // Detect Sinhala script (U+0D80–U+0DFF)
-  if (/[\u0D80-\u0DFF]/.test(lastUserContent)) return KAPRU_ERROR_MESSAGES.si;
+  if (/[\u0D80-\u0DFF]/.test(lastUserContent)) return messages.si;
   // Detect Tamil script (U+0B80–U+0BFF)
-  if (/[\u0B80-\u0BFF]/.test(lastUserContent)) return KAPRU_ERROR_MESSAGES.ta;
-  return KAPRU_ERROR_MESSAGES.en;
+  if (/[\u0B80-\u0BFF]/.test(lastUserContent)) return messages.ta;
+  return messages.en;
 }
 
 export function ChatWindow() {
@@ -102,12 +115,14 @@ export function ChatWindow() {
       const data = await response.json();
 
       if (!response.ok) {
-        const errText =
-          data?.error ||
-          (response.status === 429
-            ? "I'm getting a lot of requests right now \u2014 please wait a moment and try again."
-            : getKapruErrorMessage(safeText));
-        throw new Error(errText);
+        const errType = (data?.error || "UNKNOWN").toLowerCase();
+        const typeKey = errType === "rate_limit" 
+          ? "rate_limit" 
+          : errType === "network_error" 
+            ? "network" 
+            : "generic";
+        
+        throw new Error(getKapruErrorMessage(typeKey, safeText));
       }
 
       const replyText: string =
@@ -129,10 +144,12 @@ export function ChatWindow() {
       setMessages((prev) => [...prev, newAssistantMessage]);
     } catch (err: unknown) {
       // BUG 4 FIX: use Kapru-voiced error, keyed to the user's language
-      const message =
-        err instanceof Error
-          ? err.message
-          : getKapruErrorMessage(safeText);
+      let message = err instanceof Error ? err.message : getKapruErrorMessage('generic', safeText);
+      
+      // If fetch fails locally before reaching the server, convert to network error
+      if (message.includes("Failed to fetch") || message.includes("Load failed")) {
+        message = getKapruErrorMessage('network', safeText);
+      }
       const errorMsg: ChatMessage = {
         id: Date.now().toString(),
         role: "assistant",
