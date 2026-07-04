@@ -31,10 +31,23 @@ const KAPRU_ERROR_MESSAGES = {
 
 function getKapruErrorMessage(type: 'generic' | 'rate_limit' | 'network', lastUserContent: string): string {
   const messages = KAPRU_ERROR_MESSAGES[type] || KAPRU_ERROR_MESSAGES.generic;
-  // Detect Sinhala script (U+0D80–U+0DFF)
+  const lowerContent = lastUserContent.toLowerCase();
+
+  // 1. Detect direct scripts
   if (/[\u0D80-\u0DFF]/.test(lastUserContent)) return messages.si;
-  // Detect Tamil script (U+0B80–U+0BFF)
   if (/[\u0B80-\u0BFF]/.test(lastUserContent)) return messages.ta;
+
+  // 2. Detect Singlish (2+ words)
+  const singlishWords = ['ekak', 'ona', 'mata', 'oyage', 'kohomada', 'denna', 'puluwan', 'mage'];
+  const singlishMatchCount = singlishWords.filter(w => new RegExp(`\\b${w}\\b`).test(lowerContent)).length;
+  if (singlishMatchCount >= 2) return messages.si;
+
+  // 3. Detect Tanglish (2+ words)
+  const tanglishWords = ['venum', 'illai', 'theriyum', 'solla', 'enna', 'naan'];
+  const tanglishMatchCount = tanglishWords.filter(w => new RegExp(`\\b${w}\\b`).test(lowerContent)).length;
+  if (tanglishMatchCount >= 2) return messages.ta;
+
+  // Fallback to English
   return messages.en;
 }
 
